@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+rio-cogeo
+rasterio
+python-multipart
+pytest
+httpx
+titiler.core
+titiler.application

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>GeoTIFF COG Viewer</title>
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet">
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+    #panel {
+      position: absolute; top: 10px; left: 10px; z-index: 1;
+      background: white; padding: 12px; border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3); max-width: 280px;
+      font-size: 13px;
+    }
+    #panel h3 { margin: 0 0 8px; font-size: 14px; }
+    .layer-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+    .layer-row label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    input[type="file"] { margin-bottom: 8px; width: 100%; }
+    #status { margin-top: 6px; color: #555; }
+    button { width: 100%; padding: 6px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <h3>GeoTIFF &rarr; COG</h3>
+    <input type="file" id="fileInput" accept=".tif,.tiff">
+    <button onclick="uploadFile()">Upload & Convert</button>
+    <div id="status"></div>
+    <hr>
+    <div id="layerList"></div>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    const API = "http://127.0.0.1:8000";
+
+    const map = new maplibregl.Map({
+      container: "map",
+      style: "https://demotiles.maplibre.org/style.json",
+      center: [76.46, 10.34],
+      zoom: 10
+    });
+    map.addControl(new maplibregl.NavigationControl());
+
+    async function uploadFile() {
+      const input = document.getElementById("fileInput");
+      const statusEl = document.getElementById("status");
+      if (!input.files.length) { statusEl.textContent = "Choose a file first."; return; }
+
+      const formData = new FormData();
+      formData.append("file", input.files[0]);
+      statusEl.textContent = "Uploading...";
+
+      const res = await fetch(`${API}/upload`, { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) { statusEl.textContent = "Error: " + JSON.stringify(data); return; }
+
+      statusEl.textContent = "Converting...";
+      pollStatus(data.layer_id, statusEl);
+    }
+
+    async function pollStatus(layerId, statusEl) {
+      const res = await fetch(`${API}/status/${layerId}`);
+      const data = await res.json();
+      if (data.status === "pending") {
+        setTimeout(() => pollStatus(layerId, statusEl), 1500);
+      } else if (data.status === "done") {
+        statusEl.textContent = `Done (${data.compression_ratio}x compression)`;
+        refreshLayers();
+      } else {
+        statusEl.textContent = "Failed: " + data.error_message;
+      }
+    }
+
+    async function refreshLayers() {
+      const res = await fetch(`${API}/layers`);
+      const layers = await res.json();
+      const listEl = document.getElementById("layerList");
+      listEl.innerHTML = "";
+
+      layers.filter(l => l.status === "done").forEach(layer => {
+        const row = document.createElement("div");
+        row.className = "layer-row";
+        row.innerHTML = `
+          <input type="checkbox" onchange="toggleLayer('${layer.id}', this.checked)">
+          <label title="${layer.filename}">${layer.filename}</label>
+        `;
+        listEl.appendChild(row);
+      });
+    }
+
+    function toggleLayer(layerId, visible) {
+      const sourceId = `src-${layerId}`;
+      const layerIdMap = `layer-${layerId}`;
+
+      if (visible) {
+        const tileUrl = `${API}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=cogs/${layerId}_cog.tif`;
+        map.addSource(sourceId, { type: "raster", tiles: [tileUrl], tileSize: 256 });
+        map.addLayer({ id: layerIdMap, type: "raster", source: sourceId });
+
+        fetch(`${API}/status/${layerId}`).then(r => r.json()).then(data => {
+          if (data.bounds) {
+            const [w, s, e, n] = data.bounds;
+            map.fitBounds([[w, s], [e, n]], { padding: 40 });
+          }
+        });
+      } else {
+        if (map.getLayer(layerIdMap)) map.removeLayer(layerIdMap);
+        if (map.getSource(sourceId)) map.removeSource(sourceId);
+      }
+    }
+
+    map.on("load", refreshLayers);
+  </script>
+</body>
+</html>
